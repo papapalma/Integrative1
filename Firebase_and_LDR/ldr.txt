@@ -72,19 +72,8 @@ void loop() {
         return;
     }
 
-    // Determine light level
-    String lightLevel;
-    if (analogValue < 40) {
-        lightLevel = "Dark";
-    } else if (analogValue < 800) {
-        lightLevel = "Dim";
-    } else if (analogValue < 2000) {
-        lightLevel = "Light";
-    } else if (analogValue < 3200) {
-        lightLevel = "Bright";
-    } else {
-        lightLevel = "Very bright";
-    }
+    // Determine daylight status (0 = Light, 1 = No Light)
+    int daylight = (analogValue > 800) ? 0 : 1;
 
     // Get current timestamp
     String timestamp = getCurrentTimestamp();
@@ -93,7 +82,7 @@ void loop() {
     Serial.print("Time: "); Serial.print(timestamp);
     Serial.print(", Temperature: "); Serial.print(temp); Serial.print(" °C");
     Serial.print(", Humidity: "); Serial.print(humidity); Serial.print(" %");
-    Serial.print(", Light Level: "); Serial.print(lightLevel);
+    Serial.print(", Daylight: "); Serial.print(daylight);
     Serial.print(" (Analog: "); Serial.print(analogValue); Serial.println(")");
 
     if (WiFi.status() == WL_CONNECTED) {
@@ -105,7 +94,7 @@ void loop() {
             "\"timestamp\": {\"stringValue\": \"" + timestamp + "\"},"
             "\"temperature\": {\"doubleValue\": " + String(temp) + "},"
             "\"humidity\": {\"doubleValue\": " + String(humidity) + "},"
-            "\"light\": {\"stringValue\": \"" + lightLevel + "\"}"
+            "\"daylight\": {\"integerValue\": " + String(daylight) + "}"
             "}"
         "}";
 
