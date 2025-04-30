@@ -1,0 +1,148 @@
+//Code for Arduino
+
+#include <DHT.h>
+
+#define DHTPIN 2       
+#define DHTTYPE DHT11
+
+DHT dht(DHTPIN, DHTTYPE);
+
+void setup() {
+  Serial.begin(9600);  
+  dht.begin();
+}
+
+void loop() {
+  float temperature = dht.readTemperature();
+  float humidity = dht.readHumidity();
+
+  if (!isnan(temperature) && !isnan(humidity)) {
+    Serial.print(temperature, 1);
+    Serial.print(",");
+    Serial.println(humidity, 1);  
+  } else {
+    Serial.println("Error reading from DHT11");
+  }
+
+  delay(5000);
+}
+
+//Code for ESP
+
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <time.h>
+
+#define RXD2 16  // Connect to TX of Arduino
+#define TXD2 17  // Connect to RX of Arduino
+#define LIGHT_SENSOR_PIN 33 
+
+// WiFi credentials
+const char* ssid = "realme_9i";
+const char* password = "1234abcde";
+
+// NTP Time Configuration
+const char* ntpServer = "time.google.com";
+const long gmtOffset_sec = 8 * 3600; // GMT+8 for the Philippines
+const int daylightOffset_sec = 0;
+
+// Firestore API URL (Replace with your actual Firestore key)
+const char* firestoreUrl = "https://firestore.googleapis.com/v1/projects/esp32-17d6e/databases/(default)/documents/sensorData?key=AIzaSyBfOtl2xzd3CMK2-lCWHpf9q9Lvn5yxNA8";
+
+bool connectToWiFi() {
+  Serial.println("Connecting to Wi-Fi...");
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nConnected to Wi-Fi!");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+    return true;
+  } else {
+    Serial.println("\nFailed to connect to Wi-Fi.");
+    return false;
+  }
+}
+
+String getCurrentTimestamp() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Failed to obtain time");
+    return "Unknown";
+  }
+  char timeString[30];
+  strftime(timeString, sizeof(timeString), "%Y-%m-%dT%H:%M:%S", &timeinfo);
+  return String(timeString);
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial2.begin(9600, SERIAL_8N1, RXD2, TXD2); // UART2 for receiving from Arduino
+  analogSetAttenuation(ADC_11db);
+
+  if (!connectToWiFi()) {
+    ESP.restart();
+  }
+
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+}
+
+void loop() {
+  if (Serial2.available()) {
+    String data = Serial2.readStringUntil('\n'); // Expecting format "25.3,60.1"
+    int commaIndex = data.indexOf(',');
+
+    if (commaIndex > 0) {
+      float temp = data.substring(0, commaIndex).toFloat();
+      float humidity = data.substring(commaIndex + 1).toFloat();
+
+      int analogValue = analogRead(LIGHT_SENSOR_PIN);
+      int daylight = (analogValue > 800) ? 0 : 1;
+      String timestamp = getCurrentTimestamp();
+
+      Serial.print("Time: "); Serial.print(timestamp);
+      Serial.print(", Temp: "); Serial.print(temp);
+      Serial.print(", Humidity: "); Serial.print(humidity);
+      Serial.print(", Daylight: "); Serial.println(daylight);
+
+      if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http;
+
+        String payload = "{"
+            "\"fields\": {"
+            "\"timestamp\": {\"stringValue\": \"" + timestamp + "\"},"
+            "\"temperature\": {\"doubleValue\": " + String(temp) + "},"
+            "\"humidity\": {\"doubleValue\": " + String(humidity) + "},"
+            "\"daylight\": {\"integerValue\": " + String(daylight) + "}"
+            "}"
+        "}";
+
+        http.begin(firestoreUrl);
+        http.addHeader("Content-Type", "application/json");
+
+        int httpResponseCode = http.POST(payload);
+        Serial.print("HTTP Response code: "); Serial.println(httpResponseCode);
+
+        if (httpResponseCode > 0) {
+          Serial.println("Data sent successfully.");
+          Serial.println(http.getString());
+        } else {
+          Serial.println("Error sending data to Firestore.");
+        }
+        http.end();
+      } else {
+        Serial.println("WiFi not connected. Skipping data upload.");
+      }
+    }
+  }
+
+  delay(5000);
+}
