@@ -1,0 +1,197 @@
+------------------------------------------------------------------------------Code for esp32----------------------------------------------------------------------------------
+
+#include <WiFi.h>
+#include <HTTPClient.h>
+#include <time.h>
+
+#define RXD2 16 // Connect to TX of Arduino (SoftwareSerial TX)
+#define TXD2 17 // Connect to RX of Arduino (optional)
+#define FIREBASE_URL "https://firestore.googleapis.com/v1/projects/sensor-15619/databases/(default)/documents/sensorData?key=AIzaSyDentKO4P4WuTMH0yGZ_yDYfGxRX6TWszo"
+
+const char* ssid = "tplink";
+const char* password = "QWERTYUIOP12345678";
+
+const char* ntpServer = "time.google.com";
+const long gmtOffset_sec = 8 * 3600; // GMT+8
+const int daylightOffset_sec = 0;
+
+bool connectToWiFi() {
+  Serial.println("Connecting to Wi-Fi...");
+  WiFi.mode(WIFI_STA);
+  WiFi.begin(ssid, password);
+
+  int attempts = 0;
+  while (WiFi.status() != WL_CONNECTED && attempts < 20) {
+    delay(500);
+    Serial.print(".");
+    attempts++;
+  }
+
+  if (WiFi.status() == WL_CONNECTED) {
+    Serial.println("\nConnected to Wi-Fi!");
+    Serial.print("IP Address: ");
+    Serial.println(WiFi.localIP());
+    return true;
+  } else {
+    Serial.println("\nFailed to connect to Wi-Fi.");
+    return false;
+  }
+}
+
+String getCurrentTimestamp() {
+  struct tm timeinfo;
+  if (!getLocalTime(&timeinfo)) {
+    Serial.println("Failed to get time");
+    return "Unknown";
+  }
+  char timeString[30];
+  strftime(timeString, sizeof(timeString), "%Y-%m-%dT%H:%M:%S", &timeinfo);
+  return String(timeString);
+}
+
+void setup() {
+  Serial.begin(115200);
+  Serial2.begin(9600, SERIAL_8N1, RXD2, TXD2); // UART2 for Arduino
+
+  if (!connectToWiFi()) {
+    ESP.restart();
+  }
+
+  configTime(gmtOffset_sec, daylightOffset_sec, ntpServer);
+}
+
+void loop() {
+  if (Serial2.available()) {
+    String data = Serial2.readStringUntil('\n'); // Expecting CSV
+
+    // Example data: 28.5,65.3,30.0,400,1
+    int idx1 = data.indexOf(',');
+    int idx2 = data.indexOf(',', idx1 + 1);
+    int idx3 = data.indexOf(',', idx2 + 1);
+    int idx4 = data.indexOf(',', idx3 + 1);
+
+    if (idx1 > 0 && idx4 > 0) {
+      float dhtTemp = data.substring(0, idx1).toFloat();
+      float humidity = data.substring(idx1 + 1, idx2).toFloat();
+      float lm35Temp = data.substring(idx2 + 1, idx3).toFloat();
+      int ldrValue = data.substring(idx3 + 1, idx4).toInt();
+      int rain = data.substring(idx4 + 1).toInt();
+
+      String timestamp = getCurrentTimestamp();
+
+      Serial.println("----- Received Data -----");
+      Serial.print("DHT Temp: "); Serial.println(dhtTemp);
+      Serial.print("Humidity: "); Serial.println(humidity);
+      Serial.print("LM35 Temp: "); Serial.println(lm35Temp);
+      Serial.print("LDR: "); Serial.println(ldrValue);
+      Serial.print("Rain: "); Serial.println(rain);
+      Serial.print("Timestamp: "); Serial.println(timestamp);
+
+      // Firebase JSON payload
+      String payload = "{"
+        "\"fields\": {"
+          "\"timestamp\": {\"stringValue\": \"" + timestamp + "\"},"
+          "\"dhtTemp\": {\"doubleValue\": " + String(dhtTemp) + "},"
+          "\"humidity\": {\"doubleValue\": " + String(humidity) + "},"
+          "\"lm35Temp\": {\"doubleValue\": " + String(lm35Temp) + "},"
+          "\"ldr\": {\"integerValue\": " + String(ldrValue) + "},"
+          "\"rain\": {\"integerValue\": " + String(rain) + "}"
+        "}"
+      "}";
+
+      if (WiFi.status() == WL_CONNECTED) {
+        HTTPClient http;
+        http.begin(FIREBASE_URL);
+        http.addHeader("Content-Type", "application/json");
+        int httpCode = http.POST(payload);
+        Serial.print("Firebase response: "); Serial.println(httpCode);
+        http.end();
+      } else {
+        Serial.println("WiFi disconnected. Skipping upload.");
+      }
+    }
+  }
+
+  delay(5000);
+}
+
+
+
+------------------------------------------------------------------------------Code for Arduino--------------------------------------------------------------------------------
+#include <Wire.h>
+#include <LiquidCrystal_I2C.h>
+#include <DHT.h>
+
+// LCD and Sensor Setup
+LiquidCrystal_I2C lcd(0x27, 16, 2);
+#define DHTPIN 2
+#define DHTTYPE DHT11
+DHT dht(DHTPIN, DHTTYPE);
+
+#define LED_PIN 6
+#define LM35_PIN A0
+#define LDR_PIN A1
+#define RAIN_SENSOR_PIN 4
+#define RELAY_PIN 5
+
+float lm35Sum = 0;
+int lm35Cnt = 0;
+float temperatureLM35 = 0;
+
+void setup() {
+  Serial.begin(9600);
+  dht.begin();
+  lcd.begin(16, 2);
+  lcd.backlight();
+
+  pinMode(LED_PIN, OUTPUT);
+  pinMode(LDR_PIN, INPUT);
+  pinMode(RAIN_SENSOR_PIN, INPUT);
+  pinMode(RELAY_PIN, OUTPUT);
+  digitalWrite(RELAY_PIN, LOW);
+
+  lcd.setCursor(0, 0);
+  lcd.print("Initializing...");
+  delay(2000);
+  lcd.clear();
+}
+
+void loop() {
+  // Read LM35 (averaged)
+  lm35Cnt++;
+  lm35Sum += analogRead(LM35_PIN);
+  if (lm35Cnt >= 100) {
+    float avgRead = lm35Sum / lm35Cnt;
+    float voltage = (avgRead * 5.0) / 1023.0;
+    temperatureLM35 = voltage * 100.0;
+    lm35Sum = 0;
+    lm35Cnt = 0;
+  }
+
+  int ldrValue = analogRead(LDR_PIN);
+  digitalWrite(LED_PIN, ldrValue < 130 ? HIGH : LOW);
+
+  float dhtTemp = dht.readTemperature();
+  float humidity = dht.readHumidity();
+
+  int rainState = digitalRead(RAIN_SENSOR_PIN);
+  digitalWrite(RELAY_PIN, rainState == LOW ? HIGH : LOW); // LOW = raining
+
+  // Send data to ESP32 in CSV format
+  Serial.print(dhtTemp); Serial.print(",");
+  Serial.print(humidity); Serial.print(",");
+  Serial.print(temperatureLM35); Serial.print(",");
+  Serial.print(ldrValue); Serial.print(",");
+  Serial.println(rainState);
+
+  // Display on LCD
+  lcd.setCursor(0, 0);
+  lcd.print("Temp: "); lcd.print(dhtTemp, 1); lcd.print("C");
+  lcd.setCursor(0, 1);
+  lcd.print("Hum: "); lcd.print(humidity, 0); lcd.print("%");
+
+  delay(5000);
+}
+
+
+
